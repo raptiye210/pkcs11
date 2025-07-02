@@ -1,7 +1,8 @@
 const pkcs11js = require("pkcs11js");
+const forge = require("node-forge");
 
 const libraryPath = "C:\\Windows\\System32\\etpkcs11.dll";
-const PIN = process.env.PKCS11_PIN || "2945"; // PIN'i ortam değişkeninden al
+const PIN = process.env.PKCS11_PIN || "2945"; // PIN'i ortam değişkeninden al, varsayılan 2945
 
 function createSignature(dataHash) {
   const pkcs11 = new pkcs11js.PKCS11();
@@ -20,7 +21,7 @@ function createSignature(dataHash) {
       { type: pkcs11js.CKA_CLASS, value: Buffer.from([pkcs11js.CKO_PRIVATE_KEY]) },
       { type: pkcs11js.CKA_SIGN, value: Buffer.from([1]) },
     ]);
-    
+
     let privateKeyObj;
     while (true) {
       const obj = pkcs11.C_FindObjects(session);
@@ -34,9 +35,9 @@ function createSignature(dataHash) {
     // İmza mekanizmasını başlat
     pkcs11.C_SignInit(session, { mechanism: pkcs11js.CKM_SHA256_RSA_PKCS }, privateKeyObj);
 
-    // Dinamik buffer boyutu (2048-bit RSA için 256 bayt, 4096-bit için 512 bayt)
+    // Dinamik buffer boyutu
     const keyAttrs = pkcs11.C_GetAttributeValue(session, privateKeyObj, [{ type: pkcs11js.CKA_MODULUS }]);
-    const modulusSize = keyAttrs[0].value.length; // Anahtar boyutunu al
+    const modulusSize = keyAttrs[0].value.length;
     const outputBuffer = Buffer.alloc(modulusSize);
 
     // İmzalama
@@ -55,9 +56,6 @@ function createSignature(dataHash) {
   }
 }
 
-// module.exports = { createSignature };
-
-
 function getCertificate() {
   const pkcs11 = new pkcs11js.PKCS11();
   pkcs11.load(libraryPath);
@@ -72,25 +70,34 @@ function getCertificate() {
 
     pkcs11.C_FindObjectsInit(session, [
       { type: pkcs11js.CKA_CLASS, value: Buffer.from([pkcs11js.CKO_CERTIFICATE]) },
+      { type: pkcs11js.CKA_TOKEN, value: Buffer.from([1]) },
     ]);
-    
-    let certObj;
+
+    const certificates = [];
     while (true) {
       const obj = pkcs11.C_FindObjects(session);
       if (!obj) break;
-      certObj = obj;
+      certificates.push(obj);
     }
     pkcs11.C_FindObjectsFinal(session);
 
-    if (!certObj) throw new Error("Sertifika bulunamadı");
+    if (certificates.length === 0) throw new Error("Token'da sertifika bulunamadı");
 
-    const certAttrs = pkcs11.C_GetAttributeValue(session, certObj, [{ type: pkcs11js.CKA_VALUE }]);
+    const certObj = certificates[0];
+    const certAttrs = pkcs11.C_GetAttributeValue(session, certObj, [
+      { type: pkcs11js.CKA_VALUE },
+      { type: pkcs11js.CKA_LABEL },
+    ]);
+
+    if (!certAttrs[0].value) throw new Error("CKA_VALUE özniteliği boş");
+
     const certDer = certAttrs[0].value;
+    console.log("Sertifika etiketi:", certAttrs[1].value?.toString() || "Bilinmeyen etiket");
+
     const certPem = forge.pki.certificateToPem(forge.pki.certificateFromDer(certDer));
 
     pkcs11.C_Logout(session);
     pkcs11.C_CloseSession(session);
-
     return certPem;
 
   } catch (err) {
@@ -101,3 +108,4 @@ function getCertificate() {
 }
 
 module.exports = { createSignature, getCertificate };
+
