@@ -73,6 +73,48 @@ try {
     console.log(`Nesne: label="${label}", class=${clazz} (${className})`);
   }
 
+    const privateKeyObj = filteredObjects.find(o => o.clazz === 3)?.obj;
+    if (!privateKeyObj) {
+    throw new Error("Private key bulunamadı!");
+    }
+    console.log("Özel anahtar bulundu:", filteredObjects.find(o => o.clazz === 3).label);
+
+
+    
+
+
+
+
+
+
+const mechanism = { mechanism: pkcs11js.CKM_SHA256_RSA_PKCS };
+
+pkcs11.C_SignInit(session, mechanism, privateKeyObj);
+
+// 1. Maksimum imza boyutunu al (örnek 256 byte RSA için)
+const MAX_SIGNATURE_LENGTH = 256;
+
+// 2. İmza için buffer oluştur
+const signatureBuffer = Buffer.alloc(MAX_SIGNATURE_LENGTH);
+
+// 3. İmzala
+const actualSignature = pkcs11.C_Sign(session, hash, signatureBuffer);
+
+// 4. Gerçek uzunluk actualSignature.length kadar, slice et
+const signature = actualSignature.slice(0, actualSignature.length);
+
+console.log("İmzalanan veri (Base64):");
+console.log(signature.toString("base64"));
+
+
+
+
+
+
+
+
+
+
   pkcs11.C_Logout(session);
   pkcs11.C_CloseSession(session);
 } catch (e) {
@@ -82,3 +124,5 @@ try {
     pkcs11.C_Finalize();
   } catch {}
 }
+
+
