@@ -4,8 +4,6 @@ const pkcs11 = new pkcs11js.PKCS11();
 const libraryPath = "C:\\Windows\\System32\\etpkcs11.dll"; // DLL yolu
 const PIN = "2945"; // PIN kodun
 
-
-
 const fs = require("fs");
 const crypto = require("crypto");
 
@@ -14,6 +12,27 @@ const pdfData = fs.readFileSync(pdfPath);
 
 // SHA-256 hash hesapla
 const hash = crypto.createHash("sha256").update(pdfData).digest();
+
+
+
+
+
+
+// PDF yi hazırla
+const { plainAddPlaceholder } = require("node-signpdf/dist/helpers");
+
+const pdfBuffer = fs.readFileSync("C:\\proje\\pkcs11\\src\\a.pdf");
+
+const pdfWithPlaceholder = plainAddPlaceholder({
+  pdfBuffer,
+  reason: "Test İmzalama",
+  signatureLength: 8192,
+});
+
+fs.writeFileSync("C:\\proje\\pkcs11\\src\\a-prepared.pdf", pdfWithPlaceholder);
+
+console.log("İmza alanı hazırlandı ve kaydedildi: a-prepared.pdf");
+
 
 
 
