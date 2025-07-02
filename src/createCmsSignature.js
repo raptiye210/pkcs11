@@ -45,7 +45,11 @@ async function createCmsSignature(dataHash) {
     const mechanism = { mechanism: pkcs11js.CKM_SHA256_RSA_PKCS };
     pkcs11.C_SignInit(session, mechanism, privateKeyObj);
 
-    const signature = pkcs11.C_Sign(session, Buffer.from(dataHash));
+  // İmzalama işlemi
+const signatureBuffer = Buffer.alloc(256);
+const signatureLen = pkcs11.C_Sign(session, Buffer.from(dataHash), signatureBuffer);
+const signature = signatureBuffer.slice(0, signatureLen);
+
 
     pkcs11.C_Logout(session);
     pkcs11.C_CloseSession(session);
