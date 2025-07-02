@@ -1,51 +1,83 @@
 const forge = require("node-forge");
+const pkcs11js = require("pkcs11js");
+const fs = require("fs");
 
-// PKCS#11’den aldığın raw imza (Buffer)
-const rawSignature = /* PKCS#11 imzan */ Buffer.alloc(256); // Örnek boş buffer, sen gerçek imzayı koy
+const libraryPath = "C:\\Windows\\System32\\etpkcs11.dll";
+const PIN = "2945";
 
-// Sertifika (PEM formatında)
-// PKCS#11 sertifikandan alman lazım, veya dosyadan oku
+// Sertifikan PEM formatında buraya koy (PKCS#11’den çıkarman lazım)
 const certPem = `-----BEGIN CERTIFICATE-----
-...sertifikan burada...
+...sertifikan buraya...
 -----END CERTIFICATE-----`;
 
-const cert = forge.pki.certificateFromPem(certPem);
+function bufferToForgeBuffer(buffer) {
+  return forge.util.createBuffer(buffer.toString("binary"));
+}
 
-// İmzalanan verinin hash’i (örneğin sha256 digest)
-const digest = /* PKCS#11 hash’ini al veya hesapla */ Buffer.alloc(32); // Örnek boş digest
+async function createCmsSignature(dataHash) {
+  const pkcs11 = new pkcs11js.PKCS11();
+  pkcs11.load(libraryPath);
+  pkcs11.C_Initialize();
 
-// CMS yapılandırması oluştur
-const p7 = forge.pkcs7.createSignedData();
-p7.content = forge.util.createBuffer(digest.toString("binary"));
-p7.addCertificate(cert);
-p7.addSigner({
-  key: null,            // Çünkü imzayı biz dışarıdan veriyoruz
-  certificate: cert,
-  digestAlgorithm: forge.pki.oids.sha256,
-  authenticatedAttributes: [
-    {
-      type: forge.pki.oids.contentType,
-      value: forge.pki.oids.data,
-    },
-    {
-      type: forge.pki.oids.messageDigest,
-      value: digest.toString("binary"),
-    },
-    {
-      type: forge.pki.oids.signingTime,
-      value: new Date(),
-    },
-  ],
-  // rawSignature dışarıdan verilecek, key boş bırakılıyor
-});
+  try {
+    const slots = pkcs11.C_GetSlotList(true);
+    if (slots.length === 0) throw new Error("Slot bulunamadı");
 
-// raw imzayı, p7 içindeki imza alanına elle koyacağız:
-p7.signers[0].signature = forge.util.createBuffer(rawSignature.toString("binary"));
+    const slot = slots[0];
+    const session = pkcs11.C_OpenSession(slot, pkcs11js.CKF_SERIAL_SESSION | pkcs11js.CKF_RW_SESSION);
+    pkcs11.C_Login(session, pkcs11js.CKU_USER, PIN);
 
-// Son olarak DER formatında CMS oluştur
-const cmsDer = forge.asn1.toDer(p7.toAsn1()).getBytes();
+    pkcs11.C_FindObjectsInit(session, []);
+    const objs = pkcs11.C_FindObjects(session, 100);
+    pkcs11.C_FindObjectsFinal(session);
 
-// Buffer olarak PDF’ye gömebilirsin:
-const cmsBuffer = Buffer.from(cmsDer, "binary");
+    const privateKeyObj = objs.find(o => {
+      try {
+        const attrs = pkcs11.C_GetAttributeValue(session, o, [{ type: pkcs11js.CKA_CLASS }]);
+        return attrs[0].value.readUInt32LE(0) === 3;
+      } catch {
+        return false;
+      }
+    });
 
-// cmsBuffer’ı node-signpdf.sign(pdfBuffer, cmsBuffer) ile kullanabilirsin.
+    if (!privateKeyObj) throw new Error("Private key bulunamadı");
+
+    const mechanism = { mechanism: pkcs11js.CKM_SHA256_RSA_PKCS };
+    pkcs11.C_SignInit(session, mechanism, privateKeyObj);
+
+    const signature = pkcs11.C_Sign(session, Buffer.from(dataHash));
+
+    pkcs11.C_Logout(session);
+    pkcs11.C_CloseSession(session);
+
+    // CMS yapısını oluştur
+    const cert = forge.pki.certificateFromPem(certPem);
+    const p7 = forge.pkcs7.createSignedData();
+
+    p7.content = bufferToForgeBuffer(dataHash);
+    p7.addCertificate(cert);
+    p7.addSigner({
+      key: null,
+      certificate: cert,
+      digestAlgorithm: forge.pki.oids.sha256,
+      authenticatedAttributes: [
+        { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
+        { type: forge.pki.oids.messageDigest, value: dataHash.toString("binary") },
+        { type: forge.pki.oids.signingTime, value: new Date() }
+      ]
+    });
+
+    // Dışarıdan imza veriyoruz, key boş
+    p7.signers[0].signature = forge.util.createBuffer(signature.toString("binary"));
+
+    const cmsDer = forge.asn1.toDer(p7.toAsn1()).getBytes();
+    const cmsBuffer = Buffer.from(cmsDer, "binary");
+
+    return cmsBuffer;
+
+  } finally {
+    try { pkcs11.C_Finalize(); } catch {}
+  }
+}
+
+module.exports = { createCmsSignature };
