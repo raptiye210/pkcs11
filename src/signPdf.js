@@ -1,43 +1,46 @@
 const fs = require("fs");
-const signer = require("node-signpdf").default;
-const { createCmsSignature } = require("./createCmsSignature");
 const crypto = require("crypto");
+const { PDFDocument } = require("pdf-lib");
+const SignPdf = require("node-signpdf").default;
+const { plainAddPlaceholder } = require("node-signpdf/dist/helpers/plainAddPlaceholder");
+const { createSignature } = require("./createSignature");
 
-function getByteRangePositions(pdfBuffer) {
-  const byteRangePos = pdfBuffer.indexOf(Buffer.from("/ByteRange ["));
-  if (byteRangePos === -1) throw new Error("ByteRange bulunamadı");
-
-  const start = byteRangePos + 11;
-  const end = pdfBuffer.indexOf("]", start);
-  if (end === -1) throw new Error("ByteRange bitişi bulunamadı");
-
-  const byteRangeStr = pdfBuffer.slice(start, end).toString();
-  const parts = byteRangeStr.trim().split(" ").map(Number);
-  if (parts.length !== 4) throw new Error("ByteRange formatı yanlış");
-
-  return parts; // [start1, length1, start2, length2]
-}
+// Girdi PDF dosyası
+const inputPdfPath = "a.pdf"; // orijinal PDF
+const preparedPdfPath = "a-prepared.pdf";
+const signedPdfPath = "a-signed.pdf";
 
 async function sign() {
-  const pdfBuffer = fs.readFileSync("C:\\proje\\pkcs11\\src\\a-prepared.pdf");
+  // PDF'e imza alanı ekle
+  const existingPdfBytes = fs.readFileSync(inputPdfPath);
+  const pdfDoc = await PDFDocument.load(existingPdfBytes);
+  const pdfWithPlaceholder = plainAddPlaceholder({
+    pdfBuffer: existingPdfBytes,
+    reason: "PKCS#11 donanım imzası",
+    contactInfo: "basar@example.com",
+    name: "Başar Sönmez",
+    location: "İzmir",
+    signatureLength: 8192, // CMS formatı kullanılmıyor, ama güvenli olsun
+  });
 
-  const byteRange = getByteRangePositions(pdfBuffer);
+  fs.writeFileSync(preparedPdfPath, pdfWithPlaceholder);
+  console.log(`İmza alanı eklendi: ${preparedPdfPath}`);
 
-  const buffers = [];
-  buffers.push(pdfBuffer.slice(byteRange[0], byteRange[0] + byteRange[1]));
-  buffers.push(pdfBuffer.slice(byteRange[2], byteRange[2] + byteRange[3]));
+  // Hash hesapla
+  const pdfBuffer = fs.readFileSync(preparedPdfPath);
+  const pdfHash = crypto.createHash("sha256").update(pdfBuffer).digest();
 
-  const hash = crypto.createHash("sha256");
-  buffers.forEach(buf => hash.update(buf));
-  const digest = hash.digest();
+  // İmza al
+  const signature = createSignature(pdfHash);
 
-  const cmsSignature = await createCmsSignature(digest);
+  // PDF'i imzala
+  const signer = new SignPdf();
+  const signedPdf = signer.sign(pdfBuffer, signature);
 
-  const signedPdf = signer.sign(pdfBuffer, cmsSignature);
-
-  fs.writeFileSync("C:\\proje\\pkcs11\\src\\a-signed.pdf", signedPdf);
-
-  console.log("PDF başarıyla imzalandı ve kaydedildi: a-signed.pdf");
+  fs.writeFileSync(signedPdfPath, signedPdf);
+  console.log(`PDF imzalandı: ${signedPdfPath}`);
 }
 
-sign().catch(console.error);
+sign().catch((err) => {
+  console.error("İmzalama sırasında hata:", err);
+});
