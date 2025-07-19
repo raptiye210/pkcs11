@@ -1,9 +1,0 @@
-{
-  "name": "jajalan",
-  "version": "1.0.0",
-  "main": "index.js",
-  "license": "MIT",
-  "dependencies": {
-    "pkcs11js": "^1.3.1"
-  }
-}
