@@ -1,266 +1,272 @@
-﻿const fs = require('fs');
-const path = require('path');
-const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
-const forge = require('node-forge');
-const { exec } = require('child_process');
-const { promisify } = require('util');
+﻿const pkcs11js = require("pkcs11js");
+const fs = require("fs");
+const crypto = require("crypto");
 
-const execAsync = promisify(exec);
-
-class ElektronikImza {
-    constructor(pin) {
+// PKCS#11 SafeNet eGüven Token Reader
+class SafeNetTokenReader {
+    constructor(pin = "2945") {
+        this.pkcs11 = new pkcs11js.PKCS11();
+        this.libraryPath = "C:\\Windows\\System32\\etpkcs11.dll";
         this.pin = pin;
-        this.certificatePath = null;
-        this.privateKey = null;
+        this.session = null;
+        this.slot = null;
+        this.isInitialized = false;
     }
 
-    // Windows Certificate Store'dan sertifika bilgilerini al
-    async getSertifikaBilgileri() {
+    // PKCS#11 başlat
+    async initialize() {
         try {
-            console.log('Windows Certificate Store kontrol ediliyor...');
+            console.log('🚀 SafeNet eGüven PKCS#11 Token Reader');
+            console.log('=====================================');
             
-            // PowerShell komutu ile sertifikaları listele
-            const psCommand = `
-                Get-ChildItem -Path Cert:\\CurrentUser\\My | 
-                Where-Object { $_.Subject -match "CN=" -and $_.HasPrivateKey -eq $true } | 
-                Select-Object Subject, Thumbprint, NotAfter, Issuer | 
-                ConvertTo-Json
-            `;
-
-            const { stdout } = await execAsync(`powershell -Command "${psCommand}"`);
+            this.pkcs11.load(this.libraryPath);
+            this.pkcs11.C_Initialize();
+            this.isInitialized = true;
             
-            if (stdout.trim()) {
-                const certificates = JSON.parse(stdout);
-                const certArray = Array.isArray(certificates) ? certificates : [certificates];
-                
-                console.log(`\\n${certArray.length} adet kullanılabilir sertifika bulundu:`);
-                certArray.forEach((cert, index) => {
-                    console.log(`${index + 1}. ${cert.Subject}`);
-                    console.log(`   Thumbprint: ${cert.Thumbprint}`);
-                    console.log(`   Geçerlilik: ${cert.NotAfter}`);
-                    console.log(`   Veren: ${cert.Issuer}\\n`);
-                });
-
-                // İlk sertifikayı kullan (veya kullanıcıdan seçim yapmasını sağla)
-                return certArray[0];
-            } else {
-                throw new Error('Hiç sertifika bulunamadı');
-            }
+            console.log('✅ PKCS#11 kütüphanesi yüklendi ve başlatıldı');
+            return true;
         } catch (error) {
-            console.error('Sertifika bilgileri alınamadı:', error.message);
-            
-            // Alternatif yöntem: USB token kontrolü
-            console.log('\\nUSB token kontrol ediliyor...');
-            return await this.checkUSBToken();
-        }
-    }
-
-    // USB token kontrolü (alternatif yöntem)
-    async checkUSBToken() {
-        try {
-            const psCommand = `
-                Get-WmiObject -Class Win32_LogicalDisk | 
-                Where-Object { $_.DriveType -eq 2 } | 
-                Select-Object DeviceID, VolumeName
-            `;
-
-            const { stdout } = await execAsync(`powershell -Command "${psCommand}"`);
-            console.log('USB cihazları:', stdout);
-            
-            return {
-                Subject: "USB Token Sertifikası",
-                Thumbprint: "dummy_thumbprint",
-                NotAfter: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-                Issuer: "USB Token Provider"
-            };
-        } catch (error) {
-            console.error('USB token kontrolü başarısız:', error.message);
-            return null;
-        }
-    }
-
-    // PDF'i imzala
-    async pdfImzala(inputPath, outputPath, sertifikaBilgisi) {
-        try {
-            console.log(`PDF imzalanıyor: ${inputPath}`);
-            
-            // PDF dosyasını oku
-            const existingPdfBytes = fs.readFileSync(inputPath);
-            const pdfDoc = await PDFDocument.load(existingPdfBytes);
-            
-            // İmza sayfası ekle
-            const pages = pdfDoc.getPages();
-            const firstPage = pages[0];
-            const { width, height } = firstPage.getSize();
-            
-            // Font yükle
-            const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-            
-            // İmza bilgileri
-            const imzaTarihi = new Date().toLocaleString('tr-TR');
-            const imzaBilgisi = [
-                'DİJİTAL İMZA',
-                `Tarih: ${imzaTarihi}`,
-                `Sertifika: ${sertifikaBilgisi.Subject.split(',')[0].replace('CN=', '')}`,
-                `PIN: ${this.pin.replace(/./g, '*')}`,
-                `Thumbprint: ${sertifikaBilgisi.Thumbprint.substring(0, 16)}...`
-            ];
-
-            // İmza kutusunu çiz
-            const imzaKutusu = {
-                x: width - 250,
-                y: 50,
-                width: 200,
-                height: 100
-            };
-
-            // Arka plan
-            firstPage.drawRectangle({
-                x: imzaKutusu.x,
-                y: imzaKutusu.y,
-                width: imzaKutusu.width,
-                height: imzaKutusu.height,
-                borderColor: rgb(0, 0, 0),
-                borderWidth: 2,
-                color: rgb(0.95, 0.95, 0.95)
-            });
-
-            // İmza bilgilerini yaz
-            let yPos = imzaKutusu.y + imzaKutusu.height - 15;
-            imzaBilgisi.forEach((satir, index) => {
-                firstPage.drawText(satir, {
-                    x: imzaKutusu.x + 10,
-                    y: yPos - (index * 15),
-                    size: index === 0 ? 12 : 8,
-                    font: font,
-                    color: rgb(0, 0, 0)
-                });
-            });
-
-            // Dijital imza hash'i oluştur
-            const pdfBytes = await pdfDoc.save();
-            const hash = forge.md.sha256.create();
-            hash.update(Buffer.from(pdfBytes).toString('binary'));
-            const digest = hash.digest().toHex();
-
-            // İmza hash'ini PDF'e ekle (metadata olarak)
-            pdfDoc.setSubject(`Dijital İmza Hash: ${digest.substring(0, 32)}`);
-            pdfDoc.setCreator(`Elektronik İmza Sistemi - PIN: ${this.pin}`);
-            pdfDoc.setProducer(`Sertifika: ${sertifikaBilgisi.Thumbprint}`);
-
-            // İmzalanmış PDF'i kaydet
-            const finalPdfBytes = await pdfDoc.save();
-            fs.writeFileSync(outputPath, finalPdfBytes);
-            
-            console.log(`✅ PDF başarıyla imzalandı: ${outputPath}`);
-            console.log(`📋 İmza Hash: ${digest.substring(0, 32)}...`);
-            
-            return {
-                success: true,
-                outputPath: outputPath,
-                hash: digest,
-                certificate: sertifikaBilgisi
-            };
-
-        } catch (error) {
-            console.error('PDF imzalama hatası:', error.message);
+            console.error('❌ PKCS#11 başlatma hatası:', error.message);
             throw error;
         }
     }
 
-    // İmza doğrulama
-    async imzaDogrula(pdfPath) {
+    // Token slot'larını bul
+    async findTokenSlots() {
+        if (!this.isInitialized) {
+            throw new Error('PKCS#11 başlatılmamış');
+        }
+
+        console.log('🔍 USB token slot\'ları aranıyor...');
+        
+        const slots = this.pkcs11.C_GetSlotList(true);
+        if (slots.length === 0) {
+            throw new Error('❌ Hiçbir USB token bulunamadı');
+        }
+
+        console.log(`📱 Bulunan slot sayısı: ${slots.length}`);
+        this.slot = slots[0];
+        return slots;
+    }
+
+    // Token oturum aç
+    async openSession() {
+        if (!this.slot) {
+            throw new Error('Token slot seçilmemiş');
+        }
+
+        console.log('🔐 Token oturumu açılıyor...');
+        
+        this.session = this.pkcs11.C_OpenSession(
+            this.slot, 
+            pkcs11js.CKF_SERIAL_SESSION | pkcs11js.CKF_RW_SESSION
+        );
+        
+        this.pkcs11.C_Login(this.session, pkcs11js.CKU_USER, this.pin);
+        console.log('✅ Oturum açıldı ve PIN ile giriş yapıldı');
+        
+        return this.session;
+    }
+
+    // Token'daki sertifika ve anahtarları listele
+    async listTokenObjects() {
+        if (!this.session) {
+            throw new Error('Oturum açılmamış');
+        }
+
+        console.log('📜 Token nesneleri taranıyor...');
+        
+        // Tüm nesneleri al
+        this.pkcs11.C_FindObjectsInit(this.session, []);
+        const objects = this.pkcs11.C_FindObjects(this.session, 100);
+        this.pkcs11.C_FindObjectsFinal(this.session);
+
+        console.log('🔍 Sertifika ve private key\'ler filtreleniyor...');
+
+        const CKO_CERTIFICATE = 1;
+        const CKO_PRIVATE_KEY = 3;
+        const filteredObjects = [];
+
+        for (const obj of objects) {
+            try {
+                const attrs = this.pkcs11.C_GetAttributeValue(this.session, obj, [
+                    { type: pkcs11js.CKA_LABEL },
+                    { type: pkcs11js.CKA_CLASS },
+                ]);
+                
+                const clazz = attrs[1]?.value ? attrs[1].value.readUInt32LE(0) : null;
+                
+                if (clazz === CKO_CERTIFICATE || clazz === CKO_PRIVATE_KEY) {
+                    const label = attrs[0]?.value ? attrs[0].value.toString() : "<Etiket yok>";
+                    
+                    filteredObjects.push({
+                        handle: obj,
+                        class: clazz,
+                        label: label,
+                        type: clazz === CKO_CERTIFICATE ? "Sertifika" : "Private Key"
+                    });
+                }
+            } catch (err) {
+                console.log('⚠️ Nesne okunamadı:', err.message);
+            }
+        }
+
+        console.log(`📋 Toplam sertifika ve anahtar sayısı: ${filteredObjects.length}`);
+        
+        for (const obj of filteredObjects) {
+            console.log(`   ${obj.type}: "${obj.label}"`);
+        }
+
+        return filteredObjects;
+    }
+
+    // Token'daki sertifika ve private key'ini bul
+    async findCertificate() {
+        const objects = await this.listTokenObjects();
+        
+        console.log('🔍 Sertifika ve private key aranıyor...');
+
+        const certificate = objects.find(obj => obj.class === 1);
+        const privateKey = objects.find(obj => obj.class === 3);
+
+        if (!certificate) {
+            throw new Error('❌ Sertifika bulunamadı');
+        }
+
+        if (!privateKey) {
+            throw new Error('❌ Private key bulunamadı');
+        }
+
+        console.log('✅ Sertifika bulundu');
+        console.log('✅ Private key bulundu');
+
+        return {
+            certificate: certificate,
+            privateKey: privateKey
+        };
+    }
+
+    // Sertifika verilerini al ve kaydet
+    async extractCertificate(certHandle) {
+        console.log('📄 Sertifika verileri çıkarılıyor...');
+        
+        const certAttrs = this.pkcs11.C_GetAttributeValue(this.session, certHandle, [
+            { type: pkcs11js.CKA_VALUE },
+        ]);
+        
+        const certificate = certAttrs[0].value;
+        
+        // DER formatında kaydet
+        fs.writeFileSync("certificate.der", certificate);
+        console.log('💾 Sertifika DER formatında kaydedildi: certificate.der');
+
+        // PEM formatına çevir ve kaydet
+        const certificatePem = `-----BEGIN CERTIFICATE-----\n${certificate.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
+        fs.writeFileSync("certificate.pem", certificatePem);
+        console.log('💾 Sertifika PEM formatında kaydedildi: certificate.pem');
+
+        return {
+            der: certificate,
+            pem: certificatePem
+        };
+    }
+
+    // Test imzalama işlemi
+    async testSigning(privateKeyHandle, testData = "Test verisi") {
+        console.log('🔐 Test imzalama işlemi başlatılıyor...');
+        
+        // Test verisinin hash'ini al
+        const hash = crypto.createHash("sha256").update(testData).digest();
+        console.log('📋 Test verisi hash\'i hesaplandı');
+        
+        // İmza işlemini başlat
+        const mechanism = { mechanism: pkcs11js.CKM_SHA256_RSA_PKCS };
+        this.pkcs11.C_SignInit(this.session, mechanism, privateKeyHandle);
+        console.log('✅ İmza işlemi başlatıldı');
+
+        // İmzala
+        const MAX_SIGNATURE_LENGTH = 256;
+        const signatureBuffer = Buffer.alloc(MAX_SIGNATURE_LENGTH);
+        const signature = this.pkcs11.C_Sign(this.session, hash, signatureBuffer);
+        
+        console.log(`📋 İmza uzunluğu: ${signature.length} byte`);
+        console.log(`🔐 İmza (Base64): ${signature.toString("base64").substring(0, 64)}...`);
+        
+        return signature;
+    }
+
+    // Temizlik
+    async cleanup() {
         try {
-            console.log(`İmza doğrulanıyor: ${pdfPath}`);
-            
-            const pdfBytes = fs.readFileSync(pdfPath);
-            const pdfDoc = await PDFDocument.load(pdfBytes);
-            
-            // Metadata'dan imza bilgilerini al
-            const subject = pdfDoc.getSubject();
-            const creator = pdfDoc.getCreator();
-            const producer = pdfDoc.getProducer();
-            
-            console.log('📋 İmza Bilgileri:');
-            console.log(`Subject: ${subject}`);
-            console.log(`Creator: ${creator}`);
-            console.log(`Producer: ${producer}`);
-            
-            // Hash kontrolü
-            if (subject && subject.includes('Dijital İmza Hash:')) {
-                const savedHash = subject.split('Dijital İmza Hash: ')[1];
-                console.log(`✅ İmza hash'i bulundu: ${savedHash}`);
-                return { valid: true, hash: savedHash };
-            } else {
-                console.log('❌ İmza hashı bulunamadı');
-                return { valid: false, error: 'İmza bulunamadı' };
+            if (this.session) {
+                this.pkcs11.C_Logout(this.session);
+                this.pkcs11.C_CloseSession(this.session);
+                console.log('✅ Oturum kapatıldı');
             }
             
+            if (this.isInitialized) {
+                this.pkcs11.C_Finalize();
+                console.log('✅ PKCS#11 kütüphanesi kapatıldı');
+            }
         } catch (error) {
-            console.error('İmza doğrulama hatası:', error.message);
-            return { valid: false, error: error.message };
+            console.log('⚠️ Temizleme hatası:', error.message);
         }
     }
 }
 
 // Ana fonksiyon
 async function main() {
+    const tokenReader = new SafeNetTokenReader("2945");
+    
     try {
-        console.log('🔐 Elektronik İmza Sistemi Başlatılıyor...');
+        // 1. PKCS#11 başlat
+        await tokenReader.initialize();
         
-        const pin = '2945';
-        const imzaSistemi = new ElektronikImza(pin);
+        // 2. Token slot'larını bul
+        await tokenReader.findTokenSlots();
         
-        // Sertifika bilgilerini al
-        const sertifikaBilgisi = await imzaSistemi.getSertifikaBilgileri();
+        // 3. Oturum aç
+        await tokenReader.openSession();
         
-        if (!sertifikaBilgisi) {
-            throw new Error('Sertifika bulunamadı veya okunamadı');
-        }
+        // 4. Token nesnelerini listele
+        await tokenReader.listTokenObjects();
+        
+        // 5. Sertifika ve private key'ini bul
+        const certs = await tokenReader.findCertificate();
+        
+        // 6. Sertifika verilerini çıkar
+        const certData = await tokenReader.extractCertificate(certs.certificate.handle);
+        
+        // 7. Test imzalama
+        const signature = await tokenReader.testSigning(certs.privateKey.handle);
+        
+        console.log('\n🎉 İŞLEMLER BAŞARIYLA TAMAMLANDI!');
+        console.log('===============================');
+        console.log('✅ SafeNet eGüven token okundu');
+        console.log('✅ Sertifika bulundu');
+        console.log('✅ Sertifika DER/PEM formatında kaydedildi');
+        console.log('✅ Test imzalama başarılı');
+        console.log('\n📋 Sonuç:');
+        console.log(`   Sertifika: ${certs.certificate.label}`);
+        console.log(`   Private Key: ${certs.privateKey.label}`);
+        console.log(`   İmza boyutu: ${signature.length} byte`);
+        console.log('\n🔐 Token hazır - PDF imzalama için kullanılabilir!');
 
-        console.log('✅ Sertifika bilgileri alındı');
-        
-        // PDF dosyalarını kontrol et
-        const inputPdf = path.join(__dirname, 'terazi.pdf');
-        const outputPdf = path.join(__dirname, 'terazi_imzali.pdf');
-        
-        if (!fs.existsSync(inputPdf)) {
-            throw new Error(`PDF dosyası bulunamadı: ${inputPdf}`);
-        }
-
-        console.log('📄 PDF dosyası bulundu, imzalama işlemi başlıyor...');
-        
-        // PDF'i imzala
-        const sonuc = await imzaSistemi.pdfImzala(inputPdf, outputPdf, sertifikaBilgisi);
-        
-        if (sonuc.success) {
-            console.log('\\n🎉 İşlem tamamlandı!');
-            console.log(`📁 İmzalanmış PDF: ${sonuc.outputPath}`);
-            
-            // İmzayı doğrula
-            console.log('\\n🔍 İmza doğrulama testi yapılıyor...');
-            const dogrulama = await imzaSistemi.imzaDogrula(outputPdf);
-            
-            if (dogrulama.valid) {
-                console.log('✅ İmza geçerli!');
-            } else {
-                console.log('❌ İmza doğrulanamadı:', dogrulama.error);
-            }
-        }
-        
     } catch (error) {
-        console.error('❌ Hata:', error.message);
-        console.log('\\n💡 Sorun giderme önerileri:');
-        console.log('1. USB elektronik imza takılı olduğundan emin olun');
-        console.log('2. İmza PIN kodunun doğru olduğundan emin olun');
-        console.log('3. Windows Certificate Store\'da sertifikalar olduğunu kontrol edin');
-        console.log('4. Yönetici olarak çalıştırmayı deneyin');
+        console.error('\n❌ HATA:', error.message);
+        console.log('\n🛠️ Sorun Giderme:');
+        console.log('1. SafeNet eGüven USB token takılı olduğundan emin olun');
+        console.log('2. PIN kodunun doğru olduğundan emin olun (2945)');
+        console.log('3. Token sürücülerinin yüklü olduğunu kontrol edin');
+        console.log('4. Uygulamayı yönetici olarak çalıştırın');
+    } finally {
+        await tokenReader.cleanup();
     }
 }
 
-// Uygulamayı çalıştır
+// Çalıştır
 if (require.main === module) {
     main();
 }
 
-module.exports = { ElektronikImza };
+module.exports = { SafeNetTokenReader };

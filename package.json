@@ -5,9 +5,11 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node pdf-signer.js",
-    "dev": "nodemon pdf-signer.js",
+    "start": "node usb-simple.js",
+    "dev": "nodemon usb-simple.js",
     "sign": "node pdf-signer.js",
+    "usb-sign": "node usb-simple.js",
+    "token-check": "node usb-token-signer.js",
     "install-deps": "npm install"
   },
   "repository": {

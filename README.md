@@ -23,14 +23,38 @@ npm install
 
 ## Kullanım
 
+### 🔒 USB Token Güvenlik Modu (Önerilen)
+```bash
+npm run usb-sign      # Sadece USB token ile imzalama
+npm run token-check   # USB token kontrolü
+```
+
+### 🔄 Esnek İmzalama Modu  
+```bash
+npm run sign          # Genel PDF imzalama
+npm start             # Varsayılan imzalama
+node demo.js          # Demo ve test
+```
+
+## İmzalama Modları
+
+**`usb-token-signer.js`** - Yüksek Güvenlik:
+- ✅ Gerçek USB token algılaması
+- ✅ Token sürücü kontrolü  
+- ✅ PIN doğrulama zorunlu
+- ❌ USB yoksa kesinlikle imzalamaz
+
+**`pdf-signer.js`** - Esnek Kullanım:
+- ✅ USB token öncelikli
+- ✅ Sistem sertifikaları yedek
+- ⚠️ Token yoksa uyarır ama çalışır
+
+## Kurulum Adımları
+
 1. USB elektronik imzanızı bilgisayara takın
-2. PIN kodunuzu `index.js` dosyasında güncelleyin (varsayılan: 2945)
+2. PIN kodunuzu dosyalarda güncelleyin (varsayılan: 2945)
 3. İmzalamak istediğiniz PDF dosyasını proje klasörüne yerleştirin
 4. Uygulamayı çalıştırın:
-
-```bash
-npm start
-```
 
 ## Örnek Kullanım
 
