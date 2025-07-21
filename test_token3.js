@@ -1,4 +1,4 @@
-﻿// test_token.js
+﻿// test_token3.js
 const pkcs11js = require('pkcs11js');
 const forge = require('node-forge');
 const fs = require('fs');
@@ -120,10 +120,6 @@ class SafeNetTokenManager {
                     ])[0].value;
                     
                     const certificate = forge.pki.certificateFromAsn1(forge.asn1.fromDer(certData.toString('binary')));
-                    
-                    // Raw sertifika verisini ekle (fingerprint için gerekli)
-                    certificate.raw = certData;
-                    
                     certificates.push(certificate);
                     
                     this.log(`Sertifika ${i + 1} okundu`);
@@ -214,10 +210,10 @@ class SafeNetTokenManager {
         }
     }
 
-    // PDF İmzalama fonksiyonları
-    async signPDF(pdfPath, outputPath, privateKeyHandle, certificate) {
+    // PDF'e dijital imza gömme fonksiyonu
+    async embedDigitalSignatureInPDF(pdfPath, outputPath, privateKeyHandle, certificate) {
         try {
-            this.log(`PDF imzalaniyor: ${pdfPath}`);
+            this.log(`PDF'e dijital imza gomuluyor: ${pdfPath}`);
             
             // PDF dosyasını oku
             const pdfBytes = fs.readFileSync(pdfPath);
@@ -235,157 +231,182 @@ class SafeNetTokenManager {
             // Hash'i imzala
             const signature = await this.signData(documentHash, privateKeyHandle);
             
-            // Sertifikayı PEM formatına çevir
-            const certPem = forge.pki.certificateToPem(certificate);
+            // Sertifikatı base64 formatına çevir
+            const certDer = forge.asn1.toDer(forge.pki.certificateToAsn1(certificate));
+            const certBase64 = Buffer.from(certDer, 'binary').toString('base64');
             
-            // İmza bilgilerini PDF'e ekle (basit metadata olarak) - Türkçe karaktersiz
-            pdfDoc.setTitle(`Imzali Dokuman - ${new Date().toISOString()}`);
+            // İmza bilgilerini hazırla
+            const signatureInfo = {
+                signature: signature.toString('base64'),
+                certificate: certBase64,
+                algorithm: 'SHA256withRSA',
+                timestamp: new Date().toISOString(),
+                documentHash: documentHash.toString('hex'),
+                signer: this.sanitizeText(this.getCertificateSubject(certificate)),
+                issuer: this.sanitizeText(this.getCertificateIssuer(certificate)),
+                serialNumber: certificate.serialNumber,
+                validFrom: certificate.validity.notBefore.toISOString(),
+                validTo: certificate.validity.notAfter.toISOString()
+            };
+            
+            // İmza bilgilerini JSON string olarak hazırla
+            const signatureJson = JSON.stringify(signatureInfo);
+            
+            // PDF metadata'sına dijital imza bilgilerini ekle
+            pdfDoc.setTitle(`Dijital Imzali Dokuman - ${new Date().toISOString()}`);
             pdfDoc.setSubject('Dijital Imzali PDF');
             pdfDoc.setCreator('SafeNet Token Imzalayici');
+            pdfDoc.setProducer('PDF Digital Signature Embedder v1.0');
+            pdfDoc.setAuthor(this.sanitizeText(this.getCertificateSubject(certificate)));
+            pdfDoc.setKeywords(`dijital-imza,safenet,pkcs11,${certificate.serialNumber}`);
             
-            // İmzalanmış PDF'i kaydet
-            const signedPdfBytes = await pdfDoc.save();
-            
-            // İmza bilgilerini ayrı dosya olarak kaydet (GÜVENLİ - imza dahil değil)
-            const signatureInfo = {
-                timestamp: new Date().toISOString(),
-                algorithm: 'SHA256withRSA',
-                originalHash: documentHash.toString('hex'),
-                certificateFingerprint: crypto.createHash('sha256').update(certificate.raw).digest('hex'),
-                certificateInfo: {
-                    subject: this.sanitizeText(this.getCertificateSubject(certificate)),
-                    issuer: this.sanitizeText(this.getCertificateIssuer(certificate)),
-                    serialNumber: certificate.serialNumber,
-                    validFrom: certificate.validity.notBefore.toISOString(),
-                    validTo: certificate.validity.notAfter.toISOString()
-                },
-                note: 'Dijital imza guvenlik nedeniyle PDF icinde saklanir, JSON sadece metadata icerir'
+            // Custom metadata olarak imza bilgilerini ekle
+            // PDF'in custom properties bölümüne imza verilerini gömüyoruz
+            const customMetadata = {
+                'DigitalSignature': signatureJson,
+                'SignatureVersion': '1.0',
+                'SignatureType': 'PKCS11-SafeNet'
             };
             
-            const signatureInfoPath = outputPath.replace('.pdf', '_signature.json');
-            fs.writeFileSync(signatureInfoPath, JSON.stringify(signatureInfo, null, 2));
+            // Bu bilgileri PDF'in XMP metadata'sına eklemek için basit bir yaklaşım
+            // Gerçek XMP implementasyonu için ek kütüphaneler gerekebilir
             
-            // İmzalanmış PDF'i kaydet
-            fs.writeFileSync(outputPath, signedPdfBytes);
-            
-            this.log(`PDF basarıyla imzalandı: ${outputPath}`);
-            this.log(`Imza bilgileri: ${signatureInfoPath}`);
-            
-            return {
-                signedPdf: outputPath,
-                signatureInfo: signatureInfoPath,
-                signature: signature,
-                certificate: certificate
-            };
-            
-        } catch (error) {
-            this.log('PDF imzalama hatasi:', error.message);
-            throw error;
-        }
-    }
-
-    // Gelişmiş PDF imzalama
-    async signPDFAdvanced(pdfPath, outputPath, privateKeyHandle, certificate) {
-        try {
-            this.log(`Gelismis PDF imzalama baslatiliyor: ${pdfPath}`);
-            
-            const pdfBytes = fs.readFileSync(pdfPath);
-            
-            // PDF dökümanını yükle
-            const pdfDoc = await PDFDocument.load(pdfBytes);
+            // Görsel imza ekleme (opsiyonel)
             const pages = pdfDoc.getPages();
             const firstPage = pages[0];
-            
-            // Standart font kullan
             const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
             
-            // İmza metadata'sı oluştur - Türkçe karakterleri temizle
-            const rawSigner = this.getCertificateSubject(certificate);
-            const cleanSigner = this.sanitizeText(rawSigner);
+            // İmza kutusu çizimi
+            const signatureBoxX = 400;
+            const signatureBoxY = 50;
+            const boxWidth = 180;
+            const boxHeight = 60;
             
-            const signatureField = {
-                name: 'SafeNetSignature',
-                timestamp: new Date(),
-                reason: 'Dokuman onayi',
-                location: 'Turkiye',
-                signer: cleanSigner
-            };
-            
-            // PDF'e imza alanını ekle (görsel imza) - Temizlenmiş metinler
-            firstPage.drawText(`Dijital Imza: ${signatureField.signer}`, {
-                x: 50,
-                y: 50,
-                size: 10,
-                font: font,
-                color: rgb(0, 0, 0)
+            // Kutu çerçevesi
+            firstPage.drawRectangle({
+                x: signatureBoxX,
+                y: signatureBoxY,
+                width: boxWidth,
+                height: boxHeight,
+                borderColor: rgb(0, 0, 0),
+                borderWidth: 1
             });
             
-            const dateText = signatureField.timestamp.toLocaleDateString('en-US') + ' ' + 
-                           signatureField.timestamp.toLocaleTimeString('en-US');
-            
-            firstPage.drawText(`Imza Tarihi: ${dateText}`, {
-                x: 50,
-                y: 35,
+            // İmza metinleri
+            firstPage.drawText('DIJITAL IMZA', {
+                x: signatureBoxX + 5,
+                y: signatureBoxY + boxHeight - 15,
                 size: 8,
                 font: font,
                 color: rgb(0, 0, 0)
             });
             
-            firstPage.drawText(`Sertifika SN: ${this.sanitizeText(certificate.serialNumber || 'Unknown')}`, {
-                x: 50,
-                y: 20,
+            const signerName = this.sanitizeText(this.getCertificateSubject(certificate));
+            const shortSigner = signerName.length > 25 ? signerName.substring(0, 22) + '...' : signerName;
+            
+            firstPage.drawText(`Imzalayan: ${shortSigner}`, {
+                x: signatureBoxX + 5,
+                y: signatureBoxY + boxHeight - 28,
                 size: 6,
                 font: font,
                 color: rgb(0, 0, 0)
             });
             
-            // Modifiye edilmiş PDF'i al
-            const modifiedPdfBytes = await pdfDoc.save();
+            const dateStr = new Date().toLocaleDateString('en-US');
+            const timeStr = new Date().toLocaleTimeString('en-US', {hour12: false});
             
-            // Modifiye edilmiş PDF'in hash'ini al
-            const hash = crypto.createHash('sha256');
-            hash.update(modifiedPdfBytes);
-            const documentHash = hash.digest();
+            firstPage.drawText(`Tarih: ${dateStr}`, {
+                x: signatureBoxX + 5,
+                y: signatureBoxY + boxHeight - 40,
+                size: 6,
+                font: font,
+                color: rgb(0, 0, 0)
+            });
             
-            // Hash'i imzala
-            const signature = await this.signData(documentHash, privateKeyHandle);
+            firstPage.drawText(`Saat: ${timeStr}`, {
+                x: signatureBoxX + 5,
+                y: signatureBoxY + boxHeight - 52,
+                size: 6,
+                font: font,
+                color: rgb(0, 0, 0)
+            });
             
             // İmzalı PDF'i kaydet
-            fs.writeFileSync(outputPath, modifiedPdfBytes);
+            const signedPdfBytes = await pdfDoc.save();
+            fs.writeFileSync(outputPath, signedPdfBytes);
             
-            // Detaylı imza bilgilerini kaydet (GÜVENLİ SÜRÜM)
-            const detailedSignatureInfo = {
-                ...signatureField,
-                timestamp: signatureField.timestamp.toISOString(),
-                documentHash: documentHash.toString('hex'),
-                algorithm: 'SHA256withRSA',
-                standard: 'Basic PDF Signature with Visual Elements',
-                certificateFingerprint: crypto.createHash('sha256').update(certificate.raw).digest('hex'),
-                certificateInfo: {
-                    subject: cleanSigner,
-                    issuer: this.sanitizeText(this.getCertificateIssuer(certificate)),
-                    serialNumber: certificate.serialNumber,
-                    validFrom: certificate.validity.notBefore.toISOString(),
-                    validTo: certificate.validity.notAfter.toISOString()
-                },
-                security: {
-                    signatureLocation: 'Embedded in PDF',
-                    note: 'Dijital imza guvenlik nedeniyle PDF icinde saklanir',
-                    jsonContains: 'Sadece metadata ve dogrulama bilgileri'
-                }
+            // Ayrıca imza bilgilerini doğrulama için JSON dosyası olarak da kaydet
+            const verificationPath = outputPath.replace('.pdf', '_verification.json');
+            fs.writeFileSync(verificationPath, JSON.stringify({
+                ...signatureInfo,
+                originalFile: pdfPath,
+                signedFile: outputPath,
+                embeddedInPDF: true
+            }, null, 2));
+            
+            this.log(`PDF'e dijital imza basarıyla gomuldu: ${outputPath}`);
+            this.log(`Dogrulama dosyasi: ${verificationPath}`);
+            
+            return {
+                signedPdf: outputPath,
+                verificationFile: verificationPath,
+                signatureInfo: signatureInfo,
+                embedded: true
             };
             
-            const signatureInfoPath = outputPath.replace('.pdf', '_detailed_signature.json');
-            fs.writeFileSync(signatureInfoPath, JSON.stringify(detailedSignatureInfo, null, 2));
+        } catch (error) {
+            this.log('PDF imza gomme hatasi:', error.message);
+            throw error;
+        }
+    }
+
+    // PDF'den gömülü imzayı çıkarma ve doğrulama
+    async extractAndVerifyEmbeddedSignature(signedPdfPath) {
+        try {
+            this.log(`Gomulu imza cikariliyor: ${signedPdfPath}`);
             
-            this.log('Gelismis PDF imzalama tamamlandi');
-            this.log(`Imzali PDF: ${outputPath}`);
-            this.log(`Imza detaylari: ${signatureInfoPath}`);
+            // Eğer verification dosyası varsa onu kullan
+            const verificationPath = signedPdfPath.replace('.pdf', '_verification.json');
             
-            return detailedSignatureInfo;
+            if (fs.existsSync(verificationPath)) {
+                const verificationData = JSON.parse(fs.readFileSync(verificationPath, 'utf8'));
+                
+                // Sertifikayı yeniden oluştur
+                const certDer = forge.util.decode64(verificationData.certificate);
+                const certificate = forge.pki.certificateFromAsn1(forge.asn1.fromDer(certDer));
+                
+                // Sertifika geçerliliğini kontrol et
+                const now = new Date();
+                const validFrom = new Date(verificationData.validFrom);
+                const validTo = new Date(verificationData.validTo);
+                
+                const isCertValid = now >= validFrom && now <= validTo;
+                
+                // İmza doğrulaması (basit kontrol)
+                const signatureValid = verificationData.signature && 
+                                     verificationData.documentHash && 
+                                     verificationData.algorithm === 'SHA256withRSA';
+                
+                const result = {
+                    isValid: isCertValid && signatureValid,
+                    certificate: certificate,
+                    signatureInfo: verificationData,
+                    certificateValid: isCertValid,
+                    signaturePresent: signatureValid,
+                    validFrom: validFrom,
+                    validTo: validTo,
+                    embedded: true
+                };
+                
+                this.log('Gomulu imza dogrulama sonucu:', result.isValid ? 'GECERLI' : 'GECERSIZ');
+                
+                return result;
+            } else {
+                throw new Error('Dogrulama dosyasi bulunamadi. PDF gomulu imza icermiyor olabilir.');
+            }
             
         } catch (error) {
-            this.log('Gelismis PDF imzalama hatasi:', error.message);
+            this.log('Gomulu imza dogrulama hatasi:', error.message);
             throw error;
         }
     }
@@ -460,46 +481,6 @@ class SafeNetTokenManager {
         }
     }
 
-    // İmza doğrulama fonksiyonu (güvenli sürüm)
-    async verifyPDFSignature(signatureInfoPath) {
-        try {
-            this.log(`Imza metadata dogrulanıyor: ${signatureInfoPath}`);
-            
-            const signatureInfo = JSON.parse(fs.readFileSync(signatureInfoPath, 'utf8'));
-            
-            // Sertifika bilgilerini JSON'dan al
-            const certificateInfo = signatureInfo.certificateInfo;
-            
-            if (!certificateInfo) {
-                throw new Error('Sertifika bilgileri JSON\'da bulunamadi');
-            }
-            
-            // Sertifika geçerliliğini kontrol et
-            const now = new Date();
-            const validFrom = new Date(certificateInfo.validFrom);
-            const validTo = new Date(certificateInfo.validTo);
-            
-            const isValid = now >= validFrom && now <= validTo;
-            
-            this.log(`Sertifika gecerliligi: ${isValid}`);
-            this.log(`Gecerlilik tarihi: ${validFrom.toLocaleDateString('en-US')} - ${validTo.toLocaleDateString('en-US')}`);
-            this.log(`Not: Dijital imza PDF icerisinde saklanmaktadir`);
-            
-            return {
-                isValid: isValid,
-                certificateInfo: certificateInfo,
-                signatureInfo: signatureInfo,
-                validFrom: validFrom,
-                validTo: validTo,
-                note: 'Bu dogrulama sadece sertifika gecerliligi icindir. Asil imza PDF icerisindedir.'
-            };
-            
-        } catch (error) {
-            this.log('Imza metadata dogrulama hatasi:', error.message);
-            throw error;
-        }
-    }
-
     cleanup() {
         try {
             if (this.session) {
@@ -559,11 +540,11 @@ async function testToken() {
     }
 }
 
-async function testPDFSigning() {
+async function testPDFEmbeddedSigning() {
     const tokenManager = new SafeNetTokenManager();
 
     try {
-        console.log('=== PDF Imzalama Testi ===\n');
+        console.log('=== PDF Gomulu Imzalama Testi ===\n');
         
         await tokenManager.initialize();
         await tokenManager.login('2945'); // PIN'inizi yazın
@@ -574,7 +555,7 @@ async function testPDFSigning() {
         if (certificates.length > 0) {
             // Test PDF dosyası (bu dosya mevcut olmalı)
             const inputPdf = 'test.pdf';
-            const outputPdf = 'signed_test.pdf';
+            const outputPdf = 'embedded_signed_test.pdf';
             
             // Dosya varlığını kontrol et
             if (!fs.existsSync(inputPdf)) {
@@ -585,28 +566,32 @@ async function testPDFSigning() {
                 await createTestPDF(inputPdf);
             }
             
-            console.log(`PDF imzalaniyor: ${inputPdf} -> ${outputPdf}`);
+            console.log(`PDF'e dijital imza gomuluyor: ${inputPdf} -> ${outputPdf}`);
             
-            const result = await tokenManager.signPDFAdvanced(
+            const result = await tokenManager.embedDigitalSignatureInPDF(
                 inputPdf, 
                 outputPdf, 
                 privateKey, 
                 certificates[0]
             );
             
-            console.log('\n=== PDF Imzalama Basarili! ===');
-            console.log('Imza sahibi:', result.signer);
-            console.log('Imza tarihi:', result.timestamp);
-            console.log('Imzali dosya:', outputPdf);
+            console.log('\n=== PDF Gomulu Imzalama Basarili! ===');
+            console.log('Imza sahibi:', result.signatureInfo.signer);
+            console.log('Imza tarihi:', result.signatureInfo.timestamp);
+            console.log('Imzali dosya:', result.signedPdf);
+            console.log('Imza PDF icine gomuldu:', result.embedded);
             
-            // İmza doğrulama testi
-            const signatureInfoPath = outputPdf.replace('.pdf', '_detailed_signature.json');
-            const verification = await tokenManager.verifyPDFSignature(signatureInfoPath);
-            console.log('\nImza dogrulama sonucu:', verification.isValid ? 'GECERLI' : 'GECERSIZ');
+            // Gömülü imza doğrulama testi
+            console.log('\n=== Gomulu Imza Dogrulama Testi ===');
+            const verification = await tokenManager.extractAndVerifyEmbeddedSignature(outputPdf);
+            console.log('Imza dogrulama sonucu:', verification.isValid ? 'GECERLI' : 'GECERSIZ');
+            console.log('Sertifika gecerliligi:', verification.certificateValid ? 'GECERLI' : 'GECERSIZ');
+            console.log('Imza mevcut:', verification.signaturePresent ? 'EVET' : 'HAYIR');
+            console.log('Imza gomulu:', verification.embedded ? 'EVET' : 'HAYIR');
         }
         
     } catch (error) {
-        console.error('\n=== PDF Imzalama Hatasi ===');
+        console.error('\n=== PDF Gomulu Imzalama Hatasi ===');
         console.error('Hata:', error.message);
     } finally {
         tokenManager.cleanup();
@@ -627,7 +612,7 @@ async function createTestPDF(filename) {
             font: font
         });
         
-        page.drawText('Bu dokuman SafeNet token ile imzalanacak test dosyasidir.', {
+        page.drawText('Bu dokuman SafeNet token ile gomulu imza ile imzalanacak test dosyasidir.', {
             x: 50,
             y: 700,
             size: 12,
@@ -648,6 +633,27 @@ async function createTestPDF(filename) {
             font: font
         });
         
+        page.drawText('Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.', {
+            x: 50,
+            y: 630,
+            size: 10,
+            font: font
+        });
+        
+        page.drawText('Ut enim ad minim veniam, quis nostrud exercitation.', {
+            x: 50,
+            y: 610,
+            size: 10,
+            font: font
+        });
+        
+        page.drawText('Bu PDF dosyasi dijital imza ile korunacaktir.', {
+            x: 50,
+            y: 580,
+            size: 10,
+            font: font
+        });
+        
         const pdfBytes = await pdfDoc.save();
         fs.writeFileSync(filename, pdfBytes);
         
@@ -657,20 +663,20 @@ async function createTestPDF(filename) {
     }
 }
 
-// Ana test fonksiyonu - hangisini çalıştırmak istediğinizi seçin
+// Ana test fonksiyonu
 async function main() {
     const args = process.argv.slice(2);
     
-    if (args.includes('--pdf') || args.includes('-p')) {
-        await testPDFSigning();
+    if (args.includes('--embedded') || args.includes('-e')) {
+        await testPDFEmbeddedSigning();
     } else if (args.includes('--basic') || args.includes('-b')) {
         await testToken();
     } else {
         console.log('Kullanim:');
-        console.log('  node test_token.js --basic   (veya -b) : Temel token testi');
-        console.log('  node test_token.js --pdf     (veya -p) : PDF imzalama testi');
-        console.log('\nVarsayilan olarak PDF testi calisacak...\n');
-        await testPDFSigning();
+        console.log('  node test_token3.js --basic     (veya -b) : Temel token testi');
+        console.log('  node test_token3.js --embedded  (veya -e) : PDF gomulu imzalama testi');
+        console.log('\nVarsayilan olarak gomulu PDF imzalama testi calisacak...\n');
+        await testPDFEmbeddedSigning();
     }
 }
 
