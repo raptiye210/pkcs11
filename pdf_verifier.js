@@ -260,7 +260,7 @@ class PDFSignatureVerifier {
 async function main() {
     const verifier = new PDFSignatureVerifier();
     
-    const pdfFiles = ['a_adobe_signed.pdf', 'a_imzali.pdf', 'a.pdf'];
+    const pdfFiles = ['a_manual_signed.pdf', 'a_jsrsasign_signed.pdf', 'a_imzali.pdf'];
     
     for (const pdfFile of pdfFiles) {
         if (fs.existsSync(pdfFile)) {
