@@ -120,13 +120,7 @@ class SafeNetTokenManager {
                     ])[0].value;
                     
                     const certificate = forge.pki.certificateFromAsn1(forge.asn1.fromDer(certData.toString('binary')));
-                    
-                    // Hem forge certificate hem PKCS#11 handle döndür
-                    certificates.push({
-                        forge: certificate,
-                        handle: objects[i],
-                        der: certData
-                    });
+                    certificates.push(certificate);
                     
                     this.log(`Sertifika ${i + 1} okundu`);
                 } catch (error) {
@@ -216,184 +210,7 @@ class SafeNetTokenManager {
         }
     }
 
-    // Adobe Reader uyumlu PKCS#7 dijital imza sistemi
-    async embedAdobeReaderSignatureInPDF(pdfPath, outputPath, privateKeyHandle, certificateObj) {
-        try {
-            this.log(`Adobe uyumlu PDF dijital imzasi gomuluyor: ${pdfPath}`);
-            
-            // PDF dosyasını oku
-            const pdfBytes = fs.readFileSync(pdfPath);
-            
-            // PDF hash hesapla
-            const hash = crypto.createHash('sha256');
-            hash.update(pdfBytes);
-            const documentHash = hash.digest();
-            
-            this.log(`PDF hash hesaplandi: ${documentHash.toString('hex')}`);
-            
-            // PKCS#7 CMS yapısını oluştur (Adobe uyumlu)
-            const pkcs7Hex = await this.createAdobeReaderPKCS7(documentHash, privateKeyHandle, certificateObj);
-            
-            // Adobe PDF'e PKCS#7 gömülmesi
-            const signedPdfBuffer = this.embedAdobeReaderSignature(pdfBytes, pkcs7Hex);
-            
-            // İmzalı PDF'i kaydet
-            fs.writeFileSync(outputPath, signedPdfBuffer);
-            
-            // Sertifika bilgileri
-            const signerName = this.sanitizeText(this.getCertificateSubject(certificateObj.forge));
-            
-            this.log(`Adobe uyumlu PDF dijital imzasi basariyla gomuldu: ${outputPath}`);
-            
-            return {
-                signedPdf: outputPath,
-                signatureInfo: {
-                    signer: signerName,
-                    timestamp: new Date().toISOString(),
-                    algorithm: 'SHA256withRSA',
-                    standard: 'Adobe.PPKLite with adbe.pkcs7.detached',
-                    documentHash: documentHash.toString('hex'),
-                    adobeCompatible: true
-                },
-                embedded: true,
-                adobeCompatible: true
-            };
-            
-        } catch (error) {
-            this.log('Adobe PDF imza gomme hatasi:', error.message);
-            throw error;
-        }
-    }
-
-    // Adobe uyumlu PKCS#7 CMS yapısı oluştur
-    async createAdobeReaderPKCS7(contentHash, privateKeyHandle, certificateObj) {
-        try {
-            this.log('Adobe uyumlu PKCS#7 CMS yapisi olusturuluyor...');
-            
-            // Sertifika DER formatında al
-            const certDer = certificateObj.der;
-            
-            // Authenticated Attributes oluştur (Adobe için kritik)
-            const authAttrsHex = this.buildAuthenticatedAttributes(contentHash);
-            const authAttrsBuffer = Buffer.from(authAttrsHex, 'hex');
-            
-            // Authenticated attributes'ı imzala
-            const signature = await this.signData(authAttrsBuffer, privateKeyHandle);
-            
-            // PKCS#7 CMS yapısını elle oluştur (Adobe uyumlu)
-            const pkcs7Hex = this.assemblePKCS7Structure(contentHash, certDer, signature, authAttrsHex);
-            
-            this.log(`PKCS#7 CMS yapisi olusturuldu, boyut: ${pkcs7Hex.length / 2} bytes`);
-            
-            return pkcs7Hex;
-            
-        } catch (error) {
-            this.log('PKCS#7 olusturma hatasi:', error.message);
-            throw error;
-        }
-    }
-
-    // Authenticated Attributes oluştur (Adobe için gerekli)
-    buildAuthenticatedAttributes(contentHash) {
-        // ContentType attribute (data OID)
-        const contentType = "301506092A864886F70D010903310806092A864886F70D010701";
-        
-        // MessageDigest attribute
-        const messageDigest = `301F06092A864886F70D01090431120410${contentHash.toString('hex')}`;
-        
-        // SigningTime attribute
-        const now = new Date();
-        const utcTime = now.toISOString().replace(/[-:.TZ]/g, '').substring(2, 12) + 'Z';
-        const signingTime = `301E06092A864886F70D010905311106020D${Buffer.from(utcTime, 'ascii').toString('hex')}`;
-        
-        // Assemble authenticated attributes
-        const authAttrs = `${contentType}${messageDigest}${signingTime}`;
-        const authAttrsLength = (authAttrs.length / 2).toString(16).padStart(4, '0');
-        
-        return `A0${authAttrsLength}${authAttrs}`;
-    }
-
-    // PKCS#7 CMS yapısını manuel olarak oluştur
-    assemblePKCS7Structure(contentHash, certDer, signature, authAttrsHex) {
-        // SignedData OID
-        const signedDataOID = "06092A864886F70D010702";
-        
-        // Version
-        const version = "020101";
-        
-        // DigestAlgorithms
-        const digestAlgs = "310B300906052B0E03021A0500";
-        
-        // ContentInfo (empty data)
-        const contentInfo = "300B06092A864886F70D010701";
-        
-        // Certificate
-        const certHex = certDer.toString('hex');
-        const certLength = (certHex.length / 2).toString(16).padStart(6, '0');
-        const certificateSet = `A0${certLength}30${certLength}${certHex}`;
-        
-        // SignerInfo
-        const signerVersion = "020101";
-        const signerIdentifier = "300F310D300B06035504031604457965726"; // Basitleştirilmiş
-        const digestAlgorithm = "300906052B0E03021A0500";
-        const signatureAlgorithm = "300D06092A864886F70D0101050500";
-        const signatureValue = `0482010${signature.length.toString(16).padStart(2, '0')}${signature.toString('hex')}`;
-        
-        // SignerInfo assembly
-        const signerInfo = `${signerVersion}${signerIdentifier}${digestAlgorithm}${authAttrsHex}${signatureAlgorithm}${signatureValue}`;
-        const signerInfoLength = (signerInfo.length / 2).toString(16).padStart(6, '0');
-        const signerInfoSet = `31${signerInfoLength}30${signerInfoLength}${signerInfo}`;
-        
-        // Assemble full SignedData
-        const signedData = `${version}${digestAlgs}${contentInfo}${certificateSet}${signerInfoSet}`;
-        const signedDataLength = (signedData.length / 2).toString(16).padStart(6, '0');
-        const fullSignedData = `30${signedDataLength}${signedData}`;
-        
-        // Assemble ContentInfo
-        const contentInfoLength = (fullSignedData.length / 2 + signedDataOID.length / 2).toString(16).padStart(6, '0');
-        const fullContentInfo = `30${contentInfoLength}${signedDataOID}A0${(fullSignedData.length / 2).toString(16).padStart(6, '0')}${fullSignedData}`;
-        
-        return fullContentInfo;
-    }
-
-    // Adobe PDF'e PKCS#7 dijital imzası göm
-    embedAdobeReaderSignature(pdfBuffer, pkcs7Hex) {
-        this.log('Adobe PDF\'e PKCS#7 dijital imzasi gomuluyor...');
-        
-        let pdfString = pdfBuffer.toString('binary');
-        this.log(`PKCS#7 hex boyutu: ${pkcs7Hex.length} karakter`);
-        
-        // Adobe standart Signature Dictionary
-        const signatureDict = [
-            `/Type /Sig`,
-            `/Filter /Adobe.PPKLite`,
-            `/SubFilter /adbe.pkcs7.detached`,
-            `/Contents <${pkcs7Hex}>`,
-            `/ByteRange [0 ${pdfBuffer.length - 1000} ${pdfBuffer.length - 500} 500]`,
-            `/M (D:${new Date().toISOString().replace(/[-:.TZ]/g, '').substring(0, 14)}+03'00')`,
-            `/Name (SafeNet Digital Signature)`
-        ].join('\n');
-        
-        // PDF'in sonuna signature dictionary ekle
-        const xrefIndex = pdfString.lastIndexOf('xref');
-        if (xrefIndex === -1) {
-            throw new Error('PDF xref tablosu bulunamadi');
-        }
-        
-        const beforeXref = pdfString.substring(0, xrefIndex);
-        const afterXref = pdfString.substring(xrefIndex);
-        
-        // Yeni signature object
-        const sigObjNumber = 999; // Basit object numbering
-        const signatureObject = `${sigObjNumber} 0 obj\n<<\n${signatureDict}\n>>\nendobj\n\n`;
-        
-        // PDF'i yeniden oluştur
-        const modifiedPdf = beforeXref + signatureObject + afterXref;
-        
-        return Buffer.from(modifiedPdf, 'binary');
-    }
-
-    // PDF'e dijital imza gömme fonksiyonu (eski basit sistem)
+    // PDF'e dijital imza gömme fonksiyonu
     async embedDigitalSignatureInPDF(pdfPath, outputPath, privateKeyHandle, certificate) {
         try {
             this.log(`PDF'e dijital imza gomuluyor: ${pdfPath}`);
@@ -415,25 +232,8 @@ class SafeNetTokenManager {
             const signature = await this.signData(documentHash, privateKeyHandle);
             
             // Sertifikatı base64 formatına çevir
-            this.log(`Sertifika tipi: ${typeof certificate}, null: ${certificate === null}`);
-            this.log(`Sertifika subject var: ${!!certificate.subject}, validity var: ${!!certificate.validity}`);
-            let certBase64 = '';
-            if (certificate && certificate.subject) {
-                try {
-                    const certAsn1 = forge.pki.certificateToAsn1(certificate);
-                    const certDer = forge.asn1.toDer(certAsn1);
-                    
-                    // toDer() bir ByteStringBuffer döndürür, string olarak al
-                    const certDerString = certDer.data || certDer.toString();
-                    certBase64 = forge.util.encode64(certDerString); 
-                } catch (certError) {
-                    this.log(`Sertifika encode hatasi: ${certError.message}`);
-                    certBase64 = '';
-                }
-            } else {
-                this.log('HATA: Sertifika null veya gecersiz!');
-                certBase64 = ''; // Boş string
-            }
+            const certDer = forge.asn1.toDer(forge.pki.certificateToAsn1(certificate));
+            const certBase64 = Buffer.from(certDer, 'binary').toString('base64');
             
             // İmza bilgilerini hazırla
             const signatureInfo = {
@@ -458,7 +258,7 @@ class SafeNetTokenManager {
             pdfDoc.setCreator('SafeNet Token Imzalayici');
             pdfDoc.setProducer('PDF Digital Signature Embedder v1.0');
             pdfDoc.setAuthor(this.sanitizeText(this.getCertificateSubject(certificate)));
-            pdfDoc.setKeywords(['dijital-imza', 'safenet', 'pkcs11', certificate.serialNumber]);
+            pdfDoc.setKeywords(`dijital-imza,safenet,pkcs11,${certificate.serialNumber}`);
             
             // Custom metadata olarak imza bilgilerini ekle
             // PDF'in custom properties bölümüne imza verilerini gömüyoruz
@@ -571,25 +371,16 @@ class SafeNetTokenManager {
             if (fs.existsSync(verificationPath)) {
                 const verificationData = JSON.parse(fs.readFileSync(verificationPath, 'utf8'));
                 
-                // Sertifikayı yeniden oluştur - DER parsing hatası düzeltmesi
-                let certificate = null;
-                let certificateValid = false;
+                // Sertifikayı yeniden oluştur
+                const certDer = forge.util.decode64(verificationData.certificate);
+                const certificate = forge.pki.certificateFromAsn1(forge.asn1.fromDer(certDer));
                 
-                try {
-                    const certDer = forge.util.decode64(verificationData.certificate);
-                    certificate = forge.pki.certificateFromAsn1(forge.asn1.fromDer(certDer));
-                    
-                    // Sertifika geçerliliğini kontrol et
-                    const now = new Date();
-                    const validFrom = new Date(verificationData.validFrom);
-                    const validTo = new Date(verificationData.validTo);
-                    
-                    certificateValid = now >= validFrom && now <= validTo;
-                } catch (certError) {
-                    this.log('Sertifika parse hatasi:', certError.message);
-                    // Sertifika parse edilemese bile diğer kontrolleri yap
-                    certificateValid = false;
-                }
+                // Sertifika geçerliliğini kontrol et
+                const now = new Date();
+                const validFrom = new Date(verificationData.validFrom);
+                const validTo = new Date(verificationData.validTo);
+                
+                const isCertValid = now >= validFrom && now <= validTo;
                 
                 // İmza doğrulaması (basit kontrol)
                 const signatureValid = verificationData.signature && 
@@ -597,13 +388,13 @@ class SafeNetTokenManager {
                                      verificationData.algorithm === 'SHA256withRSA';
                 
                 const result = {
-                    isValid: certificateValid && signatureValid,
+                    isValid: isCertValid && signatureValid,
                     certificate: certificate,
                     signatureInfo: verificationData,
-                    certificateValid: certificateValid,
+                    certificateValid: isCertValid,
                     signaturePresent: signatureValid,
-                    validFrom: verificationData.validFrom,
-                    validTo: verificationData.validTo,
+                    validFrom: validFrom,
+                    validTo: validTo,
                     embedded: true
                 };
                 
@@ -723,7 +514,7 @@ async function testToken() {
         if (certificates.length > 0) {
             const certificate = certificates[0];
             try {
-                const commonName = certificate.forge.subject.getField('CN').value;
+                const commonName = certificate.subject.getField('CN').value;
                 console.log('Sertifika sahibi:', commonName);
             } catch (e) {
                 console.log('Sertifika sahibi okunamadi');
@@ -765,7 +556,6 @@ async function testPDFEmbeddedSigning() {
             // Test PDF dosyası (bu dosya mevcut olmalı)
             const inputPdf = 'test.pdf';
             const outputPdf = 'embedded_signed_test.pdf';
-            const adobeOutputPdf = 'adobe_signed_test.pdf';
             
             // Dosya varlığını kontrol et
             if (!fs.existsSync(inputPdf)) {
@@ -776,44 +566,28 @@ async function testPDFEmbeddedSigning() {
                 await createTestPDF(inputPdf);
             }
             
-            console.log(`\n=== Basit PDF Dijital Imzalama ===`);
             console.log(`PDF'e dijital imza gomuluyor: ${inputPdf} -> ${outputPdf}`);
             
             const result = await tokenManager.embedDigitalSignatureInPDF(
                 inputPdf, 
                 outputPdf, 
                 privateKey, 
-                certificates[0].forge
-            );
-            
-            console.log('\n=== Basit PDF Imzalama Basarili! ===');
-            console.log('Imza sahibi:', result.signatureInfo.signer);
-            console.log('Imza tarihi:', result.signatureInfo.timestamp);
-            console.log('Imzali dosya:', result.signedPdf);
-            
-            // Adobe uyumlu imza testi
-            console.log(`\n=== Adobe Uyumlu PDF Dijital Imzalama ===`);
-            console.log(`Adobe PDF imzasi gomuluyor: ${inputPdf} -> ${adobeOutputPdf}`);
-            
-            const adobeResult = await tokenManager.embedAdobeReaderSignatureInPDF(
-                inputPdf, 
-                adobeOutputPdf, 
-                privateKey, 
                 certificates[0]
             );
             
-            console.log('\n=== Adobe Uyumlu PDF Imzalama Basarili! ===');
-            console.log('Imza sahibi:', adobeResult.signatureInfo.signer);
-            console.log('Imza tarihi:', adobeResult.signatureInfo.timestamp);
-            console.log('Adobe uyumlu dosya:', adobeResult.signedPdf);
-            console.log('Adobe Reader\'da gorulecek:', adobeResult.adobeCompatible ? 'EVET' : 'HAYIR');
-            console.log('Imza standardi:', adobeResult.signatureInfo.standard);
+            console.log('\n=== PDF Gomulu Imzalama Basarili! ===');
+            console.log('Imza sahibi:', result.signatureInfo.signer);
+            console.log('Imza tarihi:', result.signatureInfo.timestamp);
+            console.log('Imzali dosya:', result.signedPdf);
+            console.log('Imza PDF icine gomuldu:', result.embedded);
             
-            // Gömülü imza doğrulama testi (basit sistem için)
-            console.log('\n=== Basit Gomulu Imza Dogrulama Testi ===');
+            // Gömülü imza doğrulama testi
+            console.log('\n=== Gomulu Imza Dogrulama Testi ===');
             const verification = await tokenManager.extractAndVerifyEmbeddedSignature(outputPdf);
-            console.log('Basit imza dogrulama sonucu:', verification.isValid ? 'GECERLI' : 'GECERSIZ');
+            console.log('Imza dogrulama sonucu:', verification.isValid ? 'GECERLI' : 'GECERSIZ');
             console.log('Sertifika gecerliligi:', verification.certificateValid ? 'GECERLI' : 'GECERSIZ');
+            console.log('Imza mevcut:', verification.signaturePresent ? 'EVET' : 'HAYIR');
+            console.log('Imza gomulu:', verification.embedded ? 'EVET' : 'HAYIR');
         }
         
     } catch (error) {
@@ -900,9 +674,8 @@ async function main() {
     } else {
         console.log('Kullanim:');
         console.log('  node test_token3.js --basic     (veya -b) : Temel token testi');
-        console.log('  node test_token3.js --embedded  (veya -e) : PDF gomulu imzalama testi (Basit + Adobe uyumlu)');
+        console.log('  node test_token3.js --embedded  (veya -e) : PDF gomulu imzalama testi');
         console.log('\nVarsayilan olarak gomulu PDF imzalama testi calisacak...\n');
-        console.log('Bu test hem basit PDF imzalama hem de Adobe Reader uyumlu imzalama yapacak.\n');
         await testPDFEmbeddedSigning();
     }
 }
